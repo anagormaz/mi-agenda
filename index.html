@@ -494,6 +494,8 @@
       const [form, setForm] = useState({
         first_name: appt?.first_name || '',
         last_name: appt?.last_name || '',
+        patient_email: appt?.patient_email || '',
+        patient_phone: appt?.patient_phone || '',
         appt_date: appt?.appt_date || (isPossible ? '' : defaultDate || ''),
         appt_time: appt?.appt_time?.slice(0,5) || '',
         duration: appt?.duration || 60,
@@ -503,8 +505,34 @@
       });
       const [saving, setSaving] = useState(false);
       const [error, setError] = useState('');
+      const [pacienteId, setPacienteId] = useState(appt?.paciente_id || null);
+      const [suggestions, setSuggestions] = useState([]);
+      const [showSug, setShowSug] = useState(false);
 
       function set(k, v) { setForm(f => ({ ...f, [k]: v })); }
+
+      async function searchPacientes(q) {
+        if (!q || q.length < 2) { setSuggestions([]); setShowSug(false); return; }
+        const { data } = await db.from('pacientes')
+          .select('id, first_name, last_name, email, phone')
+          .or(`first_name.ilike.%${q}%,last_name.ilike.%${q}%`)
+          .limit(6);
+        setSuggestions(data || []);
+        setShowSug((data || []).length > 0);
+      }
+
+      function selectPaciente(p) {
+        setForm(f => ({
+          ...f,
+          first_name: p.first_name,
+          last_name: p.last_name || f.last_name,
+          patient_email: p.email || f.patient_email,
+          patient_phone: p.phone || f.patient_phone,
+        }));
+        setPacienteId(p.id);
+        setSuggestions([]);
+        setShowSug(false);
+      }
 
       async function save() {
         if (!form.first_name.trim()) { setError('Ingresa el nombre'); return; }
@@ -512,15 +540,32 @@
           setError('Ingresa fecha y hora'); return;
         }
         setSaving(true); setError('');
+
+        // Upsert paciente si no viene de autocomplete
+        let pid = pacienteId;
+        if (!pid && form.first_name.trim()) {
+          const pData = {
+            first_name: form.first_name.trim(),
+            last_name: form.last_name.trim() || null,
+            email: form.patient_email.trim() || null,
+            phone: form.patient_phone.trim() || null,
+          };
+          const { data: pRow } = await db.from('pacientes').insert([pData]).select('id').single();
+          if (pRow) pid = pRow.id;
+        }
+
         const payload = {
           first_name: form.first_name.trim(),
           last_name: form.last_name.trim(),
+          patient_email: form.patient_email.trim() || null,
+          patient_phone: form.patient_phone.trim() || null,
           appt_date: form.appt_date || null,
           appt_time: form.appt_time || null,
           duration: form.duration,
           treatment: form.treatment,
           status: form.status,
           notes: form.notes.trim(),
+          paciente_id: pid || null,
         };
         let err;
         if (isEdit) {
@@ -529,6 +574,22 @@
           ({ error: err } = await db.from('agenda_appts').insert([payload]));
         }
         if (err) { setError('Error al guardar: ' + err.message); setSaving(false); return; }
+
+        // Email de confirmación (fire & forget)
+        if (payload.patient_email && payload.appt_date && payload.status !== 'cancelled' && payload.status !== 'possible') {
+          fetch(`${SUPABASE_URL}/functions/v1/send-email`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${SUPABASE_KEY}` },
+            body: JSON.stringify({
+              to: payload.patient_email,
+              first_name: payload.first_name,
+              treatment: payload.treatment,
+              appt_date: payload.appt_date,
+              appt_time: payload.appt_time,
+            }),
+          }).catch(console.warn);
+        }
+
         onSave();
       }
 
@@ -552,13 +613,37 @@
               {error && <div style={s.errorMsg}>{error}</div>}
 
               <div style={s.row}>
-                <div style={{ flex: 1 }}>
+                <div style={{ flex: 1, position: 'relative' }}>
                   <label style={s.label}>Nombre</label>
-                  <input style={s.input} value={form.first_name} onChange={e => set('first_name', e.target.value)} placeholder="Ana" autoFocus={!isEdit} />
+                  <input style={s.input} value={form.first_name}
+                    onChange={e => { set('first_name', e.target.value); setPacienteId(null); searchPacientes(e.target.value); }}
+                    onBlur={() => setTimeout(() => setShowSug(false), 160)}
+                    placeholder="Ana" autoFocus={!isEdit} />
+                  {showSug && suggestions.length > 0 && (
+                    <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 200, background: 'var(--surface)', borderRadius: 8, boxShadow: '0 4px 16px rgba(0,0,0,0.12)', border: '0.5px solid var(--border-strong)', overflow: 'hidden', marginTop: 2 }}>
+                      {suggestions.map(p => (
+                        <div key={p.id} onMouseDown={() => selectPaciente(p)}
+                          style={{ padding: '10px 13px', cursor: 'pointer', borderBottom: '0.5px solid var(--border)', fontSize: 14 }}>
+                          <span style={{ fontWeight: 500 }}>{p.first_name} {p.last_name}</span>
+                          {p.email && <span style={{ color: 'var(--text-3)', fontSize: 12, marginLeft: 8 }}>{p.email}</span>}
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
                 <div style={{ flex: 1 }}>
                   <label style={s.label}>Apellido</label>
                   <input style={s.input} value={form.last_name} onChange={e => set('last_name', e.target.value)} placeholder="Gómez" />
+                </div>
+              </div>
+              <div style={s.row}>
+                <div style={{ flex: 1 }}>
+                  <label style={s.label}>Email <span style={{ color: 'var(--text-3)', fontWeight: 400, textTransform: 'none', letterSpacing: 0 }}>(confirmación)</span></label>
+                  <input style={s.input} type="email" value={form.patient_email} onChange={e => set('patient_email', e.target.value)} placeholder="ana@email.com" />
+                </div>
+                <div style={{ flex: 1 }}>
+                  <label style={s.label}>Teléfono</label>
+                  <input style={s.input} type="tel" value={form.patient_phone} onChange={e => set('patient_phone', e.target.value)} placeholder="+56 9 …" />
                 </div>
               </div>
 
