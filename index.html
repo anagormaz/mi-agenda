@@ -507,6 +507,7 @@
         notes: appt?.notes || '',
       });
       const [saving, setSaving] = useState(false);
+      const [waModal, setWaModal] = useState(null);
       const [error, setError] = useState('');
       const [pacienteId, setPacienteId] = useState(appt?.paciente_id || null);
       const [suggestions, setSuggestions] = useState([]);
@@ -593,7 +594,19 @@
           }).catch(console.warn);
         }
 
-        onSave();
+        // Modal de WhatsApp para citas nuevas con fecha y hora
+        if (!isEdit && payload.appt_date && payload.appt_time) {
+          setSaving(false);
+          setWaModal({
+            name: payload.first_name,
+            treatment: payload.treatment || '',
+            date: payload.appt_date,
+            time: payload.appt_time,
+            phone: payload.patient_phone || '',
+          });
+        } else {
+          onSave();
+        }
       }
 
       async function del() {
@@ -602,9 +615,56 @@
         onSave();
       }
 
+      function fmtApptDate(iso) {
+        const [y, m, d] = iso.split('-').map(Number);
+        const dt = new Date(y, m - 1, d);
+        const dias = ['domingo','lunes','martes','miércoles','jueves','viernes','sábado'];
+        const meses = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
+        return `${dias[dt.getDay()]} ${d} de ${meses[m-1]} de ${y}`;
+      }
+
+      function buildWaLink(phone, name, treatment, date, time) {
+        const digits = phone.replace(/\D/g, '');
+        const msg = `Hola ${name}, tu cita para ${treatment} ha quedado agendada para el día ${fmtApptDate(date)} a las ${time.slice(0,5)} horas.\n\nRecuerda que, en caso de no asistir, necesito que avises con al menos 24 hrs de anticipación para evitar tener que cobrar el tiempo perdido.\n\nMe alegra verte, recuerda que la dirección es Av. Kennedy 5600, piso 10, of 1016, Vitacura.\n\nCualquier duda al +56978643128.\n\nSaludos, Dra. Ana María Gormáz R.`;
+        return `https://wa.me/${digits}?text=${encodeURIComponent(msg)}`;
+      }
+
       const noPossible = form.status !== 'possible';
 
       return (
+        <>
+        {waModal && (
+          <div style={{ ...s.overlay, zIndex: 200 }}>
+            <div style={{ ...s.modal, padding: '0 0 calc(24px + var(--safe-bottom))' }}>
+              <div style={s.modalHandle} />
+              <div style={{ padding: '20px 20px 0', textAlign: 'center' }}>
+                <div style={{ fontSize: 40, marginBottom: 10 }}>✓</div>
+                <div style={{ fontSize: 19, fontWeight: 600, letterSpacing: '-0.3px', marginBottom: 6 }}>¡Cita guardada!</div>
+                <div style={{ fontSize: 14, color: 'var(--text-2)', lineHeight: 1.6 }}>
+                  <span style={{ fontWeight: 500, color: 'var(--text)' }}>{waModal.name}</span>
+                  {waModal.treatment ? ` · ${waModal.treatment}` : ''}<br/>
+                  {fmtApptDate(waModal.date)} · {waModal.time.slice(0,5)}h
+                </div>
+              </div>
+              <div style={{ padding: '20px 20px 0' }}>
+                {waModal.phone && (
+                  <a
+                    href={buildWaLink(waModal.phone, waModal.name, waModal.treatment, waModal.date, waModal.time)}
+                    target="_blank" rel="noopener noreferrer"
+                    style={{ display: 'block', background: '#25D366', color: '#fff', borderRadius: 10, padding: '14px', fontSize: 16, fontWeight: 600, textAlign: 'center', textDecoration: 'none', marginBottom: 10, letterSpacing: '-0.2px' }}
+                    onClick={onSave}>
+                    Enviar por WhatsApp
+                  </a>
+                )}
+                <button
+                  style={{ width: '100%', background: 'var(--bg)', color: 'var(--text-2)', border: '0.5px solid var(--border-strong)', borderRadius: 10, padding: '13px', fontSize: 15, fontWeight: 500 }}
+                  onClick={onSave}>
+                  Listo
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
         <div style={s.overlay} onClick={e => e.target === e.currentTarget && onClose()}>
           <div style={s.modal}>
             <div style={s.modalHandle} />
@@ -694,6 +754,7 @@
             </div>
           </div>
         </div>
+        </>
       );
     }
 
