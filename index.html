@@ -758,7 +758,54 @@
       );
     }
 
-    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+    // ── Acceso: solo la Dra. Gormaz ─────────────────────────────
+    function Login() {
+      const [email, setEmail] = useState('');
+      const [pass, setPass] = useState('');
+      const [err, setErr] = useState('');
+      const [busy, setBusy] = useState(false);
+
+      async function entrar(e) {
+        e.preventDefault();
+        setBusy(true); setErr('');
+        const { error } = await db.auth.signInWithPassword({ email: email.trim(), password: pass });
+        if (error) setErr('Correo o clave incorrectos.');
+        setBusy(false);
+      }
+
+      const box = { maxWidth: 360, margin: '15vh auto 0', padding: 24, background: 'var(--surface)',
+        borderRadius: 'var(--radius)', border: '1px solid var(--border)' };
+      const inp = { width: '100%', padding: '12px 14px', marginTop: 12, borderRadius: 8,
+        border: '1px solid var(--border-strong)', background: 'var(--bg)' };
+      return (
+        <form style={box} onSubmit={entrar}>
+          <div style={{ fontSize: 20, fontWeight: 600, color: 'var(--teal-dark)' }}>Mi Agenda</div>
+          <div style={{ fontSize: 14, color: 'var(--text-2)', marginTop: 4 }}>Ingresa con tu cuenta</div>
+          <input style={inp} type="email" autoComplete="username" placeholder="Correo"
+            value={email} onChange={e => setEmail(e.target.value)} required />
+          <input style={inp} type="password" autoComplete="current-password" placeholder="Clave"
+            value={pass} onChange={e => setPass(e.target.value)} required />
+          {err && <div style={{ color: 'var(--red-text)', fontSize: 14, marginTop: 10 }}>{err}</div>}
+          <button type="submit" disabled={busy} style={{ width: '100%', marginTop: 16, padding: 12,
+            border: 'none', borderRadius: 8, background: 'var(--teal)', color: '#fff', fontWeight: 600 }}>
+            {busy ? 'Entrando…' : 'Entrar'}
+          </button>
+        </form>
+      );
+    }
+
+    function AuthGate() {
+      const [session, setSession] = useState(undefined);
+      useEffect(() => {
+        db.auth.getSession().then(({ data }) => setSession(data.session));
+        const { data: sub } = db.auth.onAuthStateChange((_e, s) => setSession(s));
+        return () => sub.subscription.unsubscribe();
+      }, []);
+      if (session === undefined) return null;
+      return session ? <App /> : <Login />;
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<AuthGate />);
   </script>
 </body>
 </html>
