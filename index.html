@@ -67,7 +67,9 @@
     const DURATIONS = [30, 45, 60, 90];
     const TREATMENTS = [
       'Peeling', 'Botox', 'Relleno', 'Limpieza facial',
-      'Mesoterapia', 'Plasma', 'Laser', 'Consulta', 'Control', 'Otro'
+      'Mesoterapia', 'Plasma', 'Laser', 'HIFU', 'Polinucleótidos',
+      'Bioestimulador', 'Skin Builder', 'Mesoheal PHLO',
+      'Consulta', 'Control', 'Otro'
     ];
     const STATUS = {
       confirmed: { label: 'Confirmada', bg: 'var(--green-bg)', color: 'var(--green-text)' },
@@ -328,6 +330,8 @@
       const [modal, setModal] = useState(null); // null | 'new' | 'newPossible' | appt object
       const [showPossibles, setShowPossibles] = useState(true);
       const [dbReady, setDbReady] = useState(false);
+      const [tab, setTab] = useState(() => { try { return localStorage.getItem('miagenda_tab') || 'agenda'; } catch (e) { return 'agenda'; } });
+      useEffect(() => { try { localStorage.setItem('miagenda_tab', tab); } catch (e) {} }, [tab]);
       const weekDates = getWeekDates(weekOffset);
 
       useEffect(() => { initDB(); }, []);
@@ -387,7 +391,16 @@
               </div>
               <button style={s.addBtn} onClick={() => setModal('new')}>+</button>
             </div>
-            <div style={s.weekNav}>
+            <div style={{ display: 'flex', gap: 6, marginTop: 10 }}>
+              {[['agenda', 'Agenda'], ['continuidad', 'Continuidad']].map(([k, l]) => (
+                <button key={k} onClick={() => setTab(k)} style={{
+                  flex: 1, padding: '7px 0', borderRadius: 8, fontSize: 14, fontWeight: 600,
+                  border: 'none', background: tab === k ? '#fff' : 'rgba(255,255,255,0.15)',
+                  color: tab === k ? 'var(--teal-dark)' : '#fff',
+                }}>{l}</button>
+              ))}
+            </div>
+            {tab === 'agenda' && <div style={s.weekNav}>
               <button style={s.navBtn} onClick={() => setWeekOffset(o => o - 1)}>‹</button>
               <span style={s.weekLabel}>
                 {fmtDate(weekDates[0])} — {fmtDate(weekDates[6])}
@@ -397,9 +410,12 @@
                 <button style={{ ...s.navBtn, fontSize: 11, width: 'auto', padding: '0 8px' }}
                   onClick={() => setWeekOffset(0)}>Hoy</button>
               )}
-            </div>
+            </div>}
           </header>
 
+          {tab === 'continuidad' && <Continuidad />}
+
+          {tab === 'agenda' && <>
           <div style={s.scroll}>
             {weekDates.map(date => {
               const key = dateKey(date);
@@ -478,6 +494,7 @@
             <button style={s.mainAddBtn} onClick={() => setModal('new')}>+ Nueva cita</button>
             <button style={s.possAddBtn} onClick={() => setModal('newPossible')}>+ Posible</button>
           </div>
+          </>}
 
           {modal && (
             <ApptModal
@@ -512,6 +529,10 @@
       const [pacienteId, setPacienteId] = useState(appt?.paciente_id || null);
       const [suggestions, setSuggestions] = useState([]);
       const [showSug, setShowSug] = useState(false);
+      const tratInicial = appt?.treatment || '';
+      const inicialEsOtro = !!tratInicial && !TREATMENTS.includes(tratInicial);
+      const [esOtro, setEsOtro] = useState(inicialEsOtro || tratInicial === 'Otro');
+      const [otroTexto, setOtroTexto] = useState(inicialEsOtro ? tratInicial : '');
 
       function set(k, v) { setForm(f => ({ ...f, [k]: v })); }
 
@@ -738,10 +759,15 @@
               </div>
 
               <label style={s.label}>Tratamiento</label>
-              <select style={s.select} value={form.treatment} onChange={e => set('treatment', e.target.value)}>
+              <select style={s.select} value={esOtro ? 'Otro' : form.treatment}
+                onChange={e => { const v = e.target.value; if (v === 'Otro') { setEsOtro(true); set('treatment', otroTexto || 'Otro'); } else { setEsOtro(false); set('treatment', v); } }}>
                 <option value="">Seleccionar…</option>
                 {TREATMENTS.map(t => <option key={t}>{t}</option>)}
               </select>
+              {esOtro && (
+                <input style={s.input} value={otroTexto} placeholder="¿Cuál tratamiento?"
+                  onChange={e => { setOtroTexto(e.target.value); set('treatment', e.target.value.trim() || 'Otro'); }} />
+              )}
 
               <label style={s.label}>Nota <span style={{ color: 'var(--text-3)', fontWeight: 400, textTransform: 'none', letterSpacing: 0 }}>(referida por, teléfono, etc.)</span></label>
               <input style={s.input} value={form.notes} onChange={e => set('notes', e.target.value)} placeholder="Referida por Kathy · +56 9 ..." />
@@ -755,6 +781,269 @@
           </div>
         </div>
         </>
+      );
+    }
+
+    // ── Continuidad ──────────────────────────────────────────────
+    const MOTIVOS = [
+      ['control', 'Control'], ['mantencion', 'Mantención'], ['complementario', 'Complementario'],
+      ['responder', 'Responder'], ['evento', 'Evento'], ['otro', 'Otro'],
+    ];
+    const MOTIVO_LABEL = Object.fromEntries(MOTIVOS);
+
+    function sumarDias(iso, n) {
+      const [y, m, d] = iso.split('-').map(Number);
+      return dateKey(new Date(y, m - 1, d + n));
+    }
+    function sumarMeses(iso, n) {
+      const [y, m, d] = iso.split('-').map(Number);
+      return dateKey(new Date(y, m - 1 + n, d));
+    }
+    function fmtCorto(iso) {
+      if (!iso) return '';
+      const [y, m, d] = iso.split('-').map(Number);
+      return new Date(y, m - 1, d).toLocaleDateString('es-CL', { day: 'numeric', month: 'short' });
+    }
+    function telWa(raw) {
+      let t = (raw || '').replace(/\D/g, '');
+      if (!t) return '';
+      if (t.length === 8) t = '569' + t;
+      else if (t.length === 9 && t.startsWith('9')) t = '56' + t;
+      return t;
+    }
+    function nombreCompleto(p) {
+      return [p?.first_name, p?.last_name].filter(Boolean).join(' ');
+    }
+
+    function Continuidad() {
+      const [segs, setSegs] = useState([]);
+      const [telefonos, setTelefonos] = useState({});
+      const [cargando, setCargando] = useState(true);
+      const [error, setError] = useState('');
+      const [verProgramados, setVerProgramados] = useState(false);
+      const hoy = dateKey(new Date());
+
+      useEffect(() => { cargar(); }, []);
+
+      async function cargar() {
+        setCargando(true); setError('');
+        const { data, error: e } = await db.from('continuidad_seguimientos')
+          .select('*, pacientes(first_name, last_name, phone)')
+          .not('estado', 'in', '(cerrado,agendo)')
+          .order('proximo_contacto', { ascending: true, nullsFirst: true })
+          .order('fecha_atencion', { ascending: true });
+        if (e) { setError('No pude cargar los seguimientos: ' + e.message); setCargando(false); return; }
+        const lista = data || [];
+        // Teléfono: de la ficha; si no hay, del último registro de cita
+        const sinTel = lista.filter(x => !x.pacientes?.phone).map(x => x.paciente_id);
+        const tels = {};
+        if (sinTel.length) {
+          const { data: citas } = await db.from('agenda_appts')
+            .select('paciente_id, patient_phone, appt_date')
+            .in('paciente_id', sinTel).not('patient_phone', 'is', null)
+            .order('appt_date', { ascending: false });
+          (citas || []).forEach(c => { if (c.patient_phone && !tels[c.paciente_id]) tels[c.paciente_id] = c.patient_phone; });
+        }
+        setTelefonos(tels);
+        setSegs(lista);
+        setCargando(false);
+      }
+
+      async function actualizar(id, cambios) {
+        const { error: e } = await db.from('continuidad_seguimientos').update(cambios).eq('id', id);
+        if (e) { setError('No se pudo guardar: ' + e.message); return false; }
+        await cargar();
+        return true;
+      }
+
+      const enHoy = x => x.estado === 'mensaje_listo' || x.estado === 'sin_respuesta' || x.estado === 'respondio'
+        || ((x.estado === 'programado' || x.estado === 'en_pausa') && x.proximo_contacto && x.proximo_contacto <= hoy);
+      const listaHoy = segs.filter(enHoy);
+      const fugas = segs.filter(x => x.estado === 'por_programar');
+      const enviados = segs.filter(x => x.estado === 'enviado');
+      const programados = segs.filter(x => (x.estado === 'programado' || x.estado === 'en_pausa') && !enHoy(x));
+
+      const titulo = { fontSize: 13, fontWeight: 600, color: 'var(--text-2)', textTransform: 'uppercase', letterSpacing: '0.5px', padding: '14px 20px 6px', display: 'flex', alignItems: 'center', gap: 8 };
+      const card = { margin: '4px 16px', padding: '12px 14px', background: 'var(--surface)', borderRadius: 10, border: '0.5px solid var(--border)' };
+      const vacio = { ...s.emptyDay, margin: '0 16px' };
+
+      if (cargando && !segs.length) return <div style={{ ...s.scroll, padding: 20, color: 'var(--text-3)' }}>Cargando…</div>;
+
+      return (
+        <div style={{ ...s.scroll, paddingBottom: 'calc(30px + var(--safe-bottom))' }}>
+          <div style={{ display: 'flex', gap: 8, margin: '0 16px 4px' }}>
+            {[['Contactos hoy', listaHoy.length, 'var(--teal-light)', 'var(--teal-dark)'],
+              ['Fugas', fugas.length, fugas.length ? 'var(--red-bg)' : 'var(--gray-bg)', fugas.length ? 'var(--red-text)' : 'var(--gray-text)'],
+              ['Esperando', enviados.length, 'var(--gray-bg)', 'var(--gray-text)']].map(([l, n, bg, c]) => (
+              <div key={l} style={{ flex: 1, background: bg, color: c, borderRadius: 10, padding: '10px 8px', textAlign: 'center' }}>
+                <div style={{ fontSize: 22, fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>{n}</div>
+                <div style={{ fontSize: 12, fontWeight: 500 }}>{l}</div>
+              </div>
+            ))}
+          </div>
+          {error && <div style={{ ...s.errorMsg, margin: '8px 16px' }}>{error}</div>}
+
+          <div style={titulo}>Hoy</div>
+          {listaHoy.length === 0 && <div style={vacio}>Nadie a quien escribir hoy</div>}
+          {listaHoy.map(x => (
+            <TarjetaHoy key={x.id} seg={x} hoy={hoy} card={card}
+              telefono={x.pacientes?.phone || telefonos[x.paciente_id] || ''}
+              actualizar={actualizar} />
+          ))}
+
+          <div style={titulo}>Fugas <span style={{ fontWeight: 400, textTransform: 'none', letterSpacing: 0, color: 'var(--text-3)' }}>· atendidas sin próximo contacto</span></div>
+          {fugas.length === 0 && <div style={vacio}>Sin fugas</div>}
+          {fugas.map(x => <TarjetaFuga key={x.id} seg={x} hoy={hoy} card={card} actualizar={actualizar} />)}
+
+          <div style={titulo}>Esperando respuesta</div>
+          {enviados.length === 0 && <div style={vacio}>Nada pendiente</div>}
+          {enviados.map(x => (
+            <div key={x.id} style={card}>
+              <div style={{ fontSize: 15, fontWeight: 500 }}>{nombreCompleto(x.pacientes)}</div>
+              <div style={{ fontSize: 13, color: 'var(--text-2)', marginTop: 2 }}>
+                Enviado {fmtCorto(x.fecha_envio)}{x.intento > 1 ? ' · 2º contacto' : ''}
+              </div>
+              <BotonesResultado seg={x} hoy={hoy} actualizar={actualizar} />
+            </div>
+          ))}
+
+          <div style={{ ...titulo, cursor: 'pointer' }} onClick={() => setVerProgramados(v => !v)}>
+            Programados <span style={s.possiblesCount}>{programados.length}</span>
+            <span style={{ marginLeft: 'auto', color: 'var(--text-3)' }}>{verProgramados ? '▾' : '▸'}</span>
+          </div>
+          {verProgramados && programados.map(x => (
+            <div key={x.id} style={{ ...card, display: 'flex', justifyContent: 'space-between', gap: 10 }}>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: 14, fontWeight: 500 }}>{nombreCompleto(x.pacientes)}</div>
+                <div style={{ fontSize: 12, color: 'var(--text-2)' }}>
+                  {MOTIVO_LABEL[x.motivo] || 'Contacto'}{x.tratamiento ? ` · ${x.tratamiento}` : ''}{x.estado === 'en_pausa' ? ' · en pausa' : ''}
+                </div>
+              </div>
+              <div style={{ fontSize: 13, color: 'var(--text-2)', flexShrink: 0 }}>{fmtCorto(x.proximo_contacto)}</div>
+            </div>
+          ))}
+          <div style={{ textAlign: 'center', marginTop: 16 }}>
+            <button onClick={cargar} style={{ ...s.possAddBtn, padding: '8px 14px', fontSize: 13 }}>Actualizar</button>
+          </div>
+        </div>
+      );
+    }
+
+    function TarjetaHoy({ seg, hoy, card, telefono, actualizar }) {
+      const [texto, setTexto] = useState(seg.mensaje_propuesto || '');
+      const [preguntar, setPreguntar] = useState(false);
+      const [verAlt, setVerAlt] = useState(false);
+      const tel = telWa(telefono);
+      const atrasado = seg.proximo_contacto && seg.proximo_contacto < hoy;
+      const etiqueta = seg.estado === 'sin_respuesta' ? '2º contacto'
+        : seg.estado === 'respondio' ? 'Respondió: falta concretar'
+        : MOTIVO_LABEL[seg.motivo] || 'Contacto';
+      const link = tel ? `https://wa.me/${tel}?text=${encodeURIComponent(texto)}` : '';
+
+      async function marcarEnviado() {
+        await actualizar(seg.id, {
+          estado: 'enviado', fecha_envio: hoy, mensaje_propuesto: texto,
+          intento: seg.estado === 'sin_respuesta' ? 2 : (seg.intento || 1),
+        });
+        setPreguntar(false);
+      }
+
+      return (
+        <div style={card}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
+            <div style={{ fontSize: 15, fontWeight: 500 }}>{nombreCompleto(seg.pacientes)}</div>
+            {atrasado && <span style={{ ...s.statusBadge, background: 'var(--amber-bg)', color: 'var(--amber-text)', marginTop: 0 }}>Atrasado · {fmtCorto(seg.proximo_contacto)}</span>}
+          </div>
+          <div style={{ fontSize: 13, color: 'var(--text-2)', marginTop: 2 }}>
+            {etiqueta}{seg.tratamiento ? ` · ${seg.tratamiento} (${fmtCorto(seg.fecha_atencion)})` : ''}
+          </div>
+          {seg.conversado && <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 4, fontStyle: 'italic' }}>{seg.conversado}</div>}
+          <textarea value={texto} onChange={e => setTexto(e.target.value)} rows={4}
+            placeholder="El asistente redacta el mensaje en la lista de la mañana. También puedes escribirlo aquí."
+            style={{ ...s.input, marginTop: 10, marginBottom: 6, resize: 'vertical', fontSize: 15, lineHeight: 1.4 }} />
+          {seg.mensaje_alternativo && (
+            <div style={{ fontSize: 13, marginBottom: 6 }}>
+              <button onClick={() => setVerAlt(v => !v)} style={{ background: 'none', border: 'none', color: 'var(--teal-dark)', fontSize: 13, padding: 0 }}>
+                {verAlt ? 'Ocultar alternativa' : 'Ver alternativa'}
+              </button>
+              {verAlt && (
+                <div style={{ marginTop: 6, padding: 10, background: 'var(--bg)', borderRadius: 8, color: 'var(--text-2)' }}>
+                  {seg.mensaje_alternativo}
+                  <div><button onClick={() => setTexto(seg.mensaje_alternativo)} style={{ marginTop: 6, background: 'none', border: 'none', color: 'var(--teal-dark)', fontSize: 13, fontWeight: 600, padding: 0 }}>Usar esta</button></div>
+                </div>
+              )}
+            </div>
+          )}
+          {!preguntar ? (
+            tel ? (
+              <a href={link} target="_blank" rel="noopener noreferrer" onClick={() => setTimeout(() => setPreguntar(true), 400)}
+                style={{ display: 'block', background: texto.trim() ? '#25D366' : '#9FD8B4', color: '#fff', borderRadius: 10, padding: '12px', fontSize: 15, fontWeight: 600, textAlign: 'center', textDecoration: 'none' }}>
+                Abrir WhatsApp
+              </a>
+            ) : (
+              <div style={{ fontSize: 13, color: 'var(--amber-text)', background: 'var(--amber-bg)', padding: '8px 10px', borderRadius: 8 }}>
+                Sin teléfono en la ficha. Agrégalo en una cita de la paciente para usar el botón.
+                <button onClick={() => setPreguntar(true)} style={{ display: 'block', marginTop: 6, background: 'none', border: 'none', color: 'var(--amber-text)', fontWeight: 600, fontSize: 13, padding: 0 }}>Ya le escribí por otro medio</button>
+              </div>
+            )
+          ) : (
+            <div style={{ background: 'var(--teal-light)', borderRadius: 10, padding: 10 }}>
+              <div style={{ fontSize: 14, fontWeight: 500, color: 'var(--teal-dark)', marginBottom: 8 }}>¿Lo enviaste?</div>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button onClick={marcarEnviado} style={{ flex: 1, ...s.saveBtn, marginTop: 0, padding: 10, fontSize: 15 }}>Sí, enviado</button>
+                <button onClick={() => setPreguntar(false)} style={{ flex: 1, ...s.possAddBtn, padding: 10 }}>Todavía no</button>
+              </div>
+            </div>
+          )}
+          <BotonesResultado seg={seg} hoy={hoy} actualizar={actualizar} />
+        </div>
+      );
+    }
+
+    function BotonesResultado({ seg, hoy, actualizar }) {
+      const btn = { flex: '1 1 30%', padding: '8px 4px', borderRadius: 8, fontSize: 13, fontWeight: 500, border: '0.5px solid var(--border-strong)', background: 'var(--bg)', color: 'var(--text-2)' };
+      function sinRespuesta() {
+        if ((seg.intento || 1) >= 2) return actualizar(seg.id, { estado: 'en_pausa', resultado: 'sin respuesta tras 2 contactos', proximo_contacto: sumarMeses(hoy, 3) });
+        return actualizar(seg.id, { estado: 'sin_respuesta', resultado: 'sin respuesta', intento: 2, mensaje_propuesto: null, mensaje_alternativo: null });
+      }
+      return (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 10 }}>
+          <button style={btn} onClick={() => actualizar(seg.id, { estado: 'respondio', resultado: 'respondió', proximo_contacto: hoy })}>Respondió</button>
+          <button style={{ ...btn, color: 'var(--green-text)', borderColor: 'var(--green-text)' }} onClick={() => actualizar(seg.id, { estado: 'agendo', resultado: 'agendó' })}>Agendó</button>
+          <button style={btn} onClick={sinRespuesta}>Sin respuesta</button>
+          <button style={btn} onClick={() => actualizar(seg.id, { estado: 'en_pausa', resultado: 'no por ahora', proximo_contacto: sumarMeses(hoy, 3) })}>En pausa</button>
+          <button style={{ ...btn, color: 'var(--red-text)' }} onClick={() => { if (confirm('¿Cerrar este seguimiento? Sale de la lista.')) actualizar(seg.id, { estado: 'cerrado', resultado: 'cerrado por Ana' }); }}>Cerrar</button>
+        </div>
+      );
+    }
+
+    function TarjetaFuga({ seg, hoy, card, actualizar }) {
+      const [fecha, setFecha] = useState('');
+      const [motivo, setMotivo] = useState('control');
+      const atajos = [['2 sem', () => sumarDias(hoy, 14)], ['1 mes', () => sumarMeses(hoy, 1)], ['3 meses', () => sumarMeses(hoy, 3)], ['4 meses', () => sumarMeses(hoy, 4)]];
+      async function guardar() {
+        if (!fecha) return;
+        await actualizar(seg.id, { estado: 'programado', proximo_contacto: fecha, motivo });
+      }
+      return (
+        <div style={card}>
+          <div style={{ fontSize: 15, fontWeight: 500 }}>{nombreCompleto(seg.pacientes)}</div>
+          <div style={{ fontSize: 13, color: 'var(--text-2)', marginTop: 2 }}>{seg.tratamiento || 'Atención'} · {fmtCorto(seg.fecha_atencion)}</div>
+          <div style={{ display: 'flex', gap: 6, marginTop: 10, flexWrap: 'wrap' }}>
+            {atajos.map(([l, f]) => (
+              <button key={l} onClick={() => setFecha(f())} style={{ padding: '6px 10px', borderRadius: 14, fontSize: 13, border: '0.5px solid var(--border-strong)', background: 'var(--bg)', color: 'var(--text-2)' }}>{l}</button>
+            ))}
+          </div>
+          <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+            <input type="date" value={fecha} onChange={e => setFecha(e.target.value)} style={{ ...s.input, marginBottom: 0, flex: 1.2, padding: '9px 10px' }} />
+            <select value={motivo} onChange={e => setMotivo(e.target.value)} style={{ ...s.select, marginBottom: 0, flex: 1, padding: '9px 10px' }}>
+              {MOTIVOS.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+            </select>
+          </div>
+          <button onClick={guardar} disabled={!fecha} style={{ ...s.saveBtn, padding: 10, fontSize: 15, marginTop: 8, opacity: fecha ? 1 : 0.5 }}>
+            {fecha ? `Programar para el ${fmtCorto(fecha)}` : 'Elige una fecha'}
+          </button>
+        </div>
       );
     }
 
