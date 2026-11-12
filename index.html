@@ -912,15 +912,7 @@
             <span style={{ marginLeft: 'auto', color: 'var(--text-3)' }}>{verProgramados ? '▾' : '▸'}</span>
           </div>
           {verProgramados && programados.map(x => (
-            <div key={x.id} style={{ ...card, display: 'flex', justifyContent: 'space-between', gap: 10 }}>
-              <div style={{ minWidth: 0 }}>
-                <div style={{ fontSize: 14, fontWeight: 500 }}>{nombreCompleto(x.pacientes)}</div>
-                <div style={{ fontSize: 12, color: 'var(--text-2)' }}>
-                  {MOTIVO_LABEL[x.motivo] || 'Contacto'}{x.tratamiento ? ` · ${x.tratamiento}` : ''}{x.estado === 'en_pausa' ? ' · en pausa' : ''}
-                </div>
-              </div>
-              <div style={{ fontSize: 13, color: 'var(--text-2)', flexShrink: 0 }}>{fmtCorto(x.proximo_contacto)}</div>
-            </div>
+            <FilaProgramado key={x.id} seg={x} hoy={hoy} card={card} actualizar={actualizar} />
           ))}
           <div style={{ textAlign: 'center', marginTop: 16 }}>
             <button onClick={cargar} style={{ ...s.possAddBtn, padding: '8px 14px', fontSize: 13 }}>Actualizar</button>
@@ -1008,6 +1000,9 @@
       }
       return (
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 10 }}>
+          {seg.estado !== 'enviado' && (
+            <button style={btn} onClick={() => actualizar(seg.id, { estado: 'enviado', fecha_envio: hoy, intento: seg.estado === 'sin_respuesta' ? 2 : (seg.intento || 1) })}>Ya le escribí</button>
+          )}
           <button style={btn} onClick={() => actualizar(seg.id, { estado: 'respondio', resultado: 'respondió', proximo_contacto: hoy })}>Respondió</button>
           <button style={{ ...btn, color: 'var(--green-text)', borderColor: 'var(--green-text)' }} onClick={() => actualizar(seg.id, { estado: 'agendo', resultado: 'agendó' })}>Agendó</button>
           <button style={btn} onClick={sinRespuesta}>Sin respuesta</button>
@@ -1017,31 +1012,134 @@
       );
     }
 
+    function FilaProgramado({ seg, hoy, card, actualizar }) {
+      const [abierto, setAbierto] = useState(false);
+      return (
+        <div style={card}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10 }}>
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontSize: 14, fontWeight: 500 }}>{nombreCompleto(seg.pacientes)}</div>
+              <div style={{ fontSize: 12, color: 'var(--text-2)' }}>
+                {MOTIVO_LABEL[seg.motivo] || 'Contacto'}{seg.tratamiento ? ` · ${seg.tratamiento}` : ''}{seg.estado === 'en_pausa' ? ' · en pausa' : ''}
+              </div>
+            </div>
+            <div style={{ textAlign: 'right', flexShrink: 0 }}>
+              <div style={{ fontSize: 13, color: 'var(--text-2)' }}>{fmtCorto(seg.proximo_contacto)}</div>
+              <button onClick={() => setAbierto(v => !v)} style={{ background: 'none', border: 'none', color: 'var(--teal-dark)', fontSize: 13, fontWeight: 600, padding: 0, marginTop: 2 }}>
+                {abierto ? 'Ocultar' : 'Cambiar'}
+              </button>
+            </div>
+          </div>
+          {abierto && <Situacion seg={seg} hoy={hoy} actualizar={actualizar} onListo={() => setAbierto(false)} />}
+        </div>
+      );
+    }
+
     function TarjetaFuga({ seg, hoy, card, actualizar }) {
-      const [fecha, setFecha] = useState('');
-      const [motivo, setMotivo] = useState('control');
-      const atajos = [['2 sem', () => sumarDias(hoy, 14)], ['1 mes', () => sumarMeses(hoy, 1)], ['3 meses', () => sumarMeses(hoy, 3)], ['4 meses', () => sumarMeses(hoy, 4)]];
-      async function guardar() {
-        if (!fecha) return;
-        await actualizar(seg.id, { estado: 'programado', proximo_contacto: fecha, motivo });
-      }
       return (
         <div style={card}>
           <div style={{ fontSize: 15, fontWeight: 500 }}>{nombreCompleto(seg.pacientes)}</div>
           <div style={{ fontSize: 13, color: 'var(--text-2)', marginTop: 2 }}>{seg.tratamiento || 'Atención'} · {fmtCorto(seg.fecha_atencion)}</div>
-          <div style={{ display: 'flex', gap: 6, marginTop: 10, flexWrap: 'wrap' }}>
-            {atajos.map(([l, f]) => (
-              <button key={l} onClick={() => setFecha(f())} style={{ padding: '6px 10px', borderRadius: 14, fontSize: 13, border: '0.5px solid var(--border-strong)', background: 'var(--bg)', color: 'var(--text-2)' }}>{l}</button>
-            ))}
+          <Situacion seg={seg} hoy={hoy} actualizar={actualizar} />
+        </div>
+      );
+    }
+
+    // ¿En qué está esta paciente? Ana elige la situación real y lo que corresponde.
+    const SITUACIONES = [
+      ['escribir', 'Hay que escribirle'],
+      ['escribi', 'Ya le escribí'],
+      ['agendo', 'Ya agendó'],
+      ['no_seguir', 'No seguir'],
+    ];
+
+    function Situacion({ seg, hoy, actualizar, onListo }) {
+      const [sit, setSit] = useState('escribir');
+      const [fecha, setFecha] = useState('');
+      const [fechaEnvio, setFechaEnvio] = useState(hoy);
+      const [fechaCita, setFechaCita] = useState('');
+      const [motivo, setMotivo] = useState(seg.motivo || 'control');
+      const [nota, setNota] = useState('');
+      const [guardando, setGuardando] = useState(false);
+      const atajos = [['2 sem', () => sumarDias(hoy, 14)], ['1 mes', () => sumarMeses(hoy, 1)], ['3 meses', () => sumarMeses(hoy, 3)], ['4 meses', () => sumarMeses(hoy, 4)]];
+      const chip = (activo) => ({ padding: '7px 11px', borderRadius: 14, fontSize: 13, fontWeight: activo ? 600 : 400,
+        border: activo ? '1px solid var(--teal-dark)' : '0.5px solid var(--border-strong)',
+        background: activo ? 'var(--teal-light)' : 'var(--bg)', color: activo ? 'var(--teal-dark)' : 'var(--text-2)' });
+      const campo = { ...s.input, marginBottom: 0, padding: '9px 10px' };
+      const etiqueta = { fontSize: 12, color: 'var(--text-3)', margin: '10px 0 4px' };
+
+      const listo = sit === 'escribir' ? !!fecha : sit === 'escribi' ? !!fechaEnvio : true;
+      const textoBoton = {
+        escribir: fecha ? `Programar para el ${fmtCorto(fecha)}` : 'Elige una fecha',
+        escribi: 'Guardar: espero su respuesta',
+        agendo: 'Guardar: agendó',
+        no_seguir: 'Sacar de la lista',
+      }[sit];
+
+      async function guardar() {
+        if (!listo || guardando) return;
+        const conNota = nota.trim()
+          ? { conversado: [seg.conversado, nota.trim()].filter(Boolean).join(' · ') } : {};
+        let cambios;
+        if (sit === 'escribir') cambios = { estado: 'programado', proximo_contacto: fecha, motivo };
+        if (sit === 'escribi') cambios = { estado: 'enviado', fecha_envio: fechaEnvio, motivo, intento: seg.intento || 1, resultado: null };
+        if (sit === 'agendo') cambios = { estado: 'agendo', motivo, resultado: fechaCita ? `agendó para el ${fmtCorto(fechaCita)}` : 'agendó' };
+        if (sit === 'no_seguir') {
+          if (!confirm('¿Sacar a esta paciente de Continuidad? No volverá a aparecer en la lista.')) return;
+          cambios = { estado: 'cerrado', resultado: 'cerrado por Ana' };
+        }
+        setGuardando(true);
+        const ok = await actualizar(seg.id, { ...cambios, ...conNota, actualizado: new Date().toISOString() });
+        setGuardando(false);
+        if (ok && onListo) onListo();
+      }
+
+      return (
+        <div>
+          <div style={etiqueta}>¿En qué está?</div>
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+            {SITUACIONES.map(([k, l]) => <button key={k} onClick={() => setSit(k)} style={chip(sit === k)}>{l}</button>)}
           </div>
-          <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-            <input type="date" value={fecha} onChange={e => setFecha(e.target.value)} style={{ ...s.input, marginBottom: 0, flex: 1.2, padding: '9px 10px' }} />
-            <select value={motivo} onChange={e => setMotivo(e.target.value)} style={{ ...s.select, marginBottom: 0, flex: 1, padding: '9px 10px' }}>
+
+          {sit === 'escribir' && (<>
+            <div style={etiqueta}>¿Cuándo le escribo?</div>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              {atajos.map(([l, f]) => { const v = f(); return <button key={l} onClick={() => setFecha(v)} style={chip(fecha === v)}>{l}</button>; })}
+            </div>
+            <input type="date" value={fecha} onChange={e => setFecha(e.target.value)} style={{ ...campo, marginTop: 8 }} />
+          </>)}
+
+          {sit === 'escribi' && (<>
+            <div style={etiqueta}>¿Cuándo le escribiste?</div>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
+              <button onClick={() => setFechaEnvio(hoy)} style={chip(fechaEnvio === hoy)}>Hoy</button>
+              <button onClick={() => setFechaEnvio(sumarDias(hoy, -1))} style={chip(fechaEnvio === sumarDias(hoy, -1))}>Ayer</button>
+            </div>
+            <input type="date" value={fechaEnvio} max={hoy} onChange={e => setFechaEnvio(e.target.value)} style={campo} />
+            <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 4 }}>Queda en «Esperando respuesta». Si no contesta en 4 días hábiles, te propongo un segundo mensaje.</div>
+          </>)}
+
+          {sit === 'agendo' && (<>
+            <div style={etiqueta}>Fecha de la cita (opcional)</div>
+            <input type="date" value={fechaCita} min={hoy} onChange={e => setFechaCita(e.target.value)} style={campo} />
+            <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 4 }}>Se cierra este ciclo. Después de esa atención, la paciente vuelve a aparecer para definir su próximo contacto.</div>
+          </>)}
+
+          {sit !== 'no_seguir' && (<>
+            <div style={etiqueta}>Motivo</div>
+            <select value={motivo} onChange={e => setMotivo(e.target.value)} style={{ ...s.select, ...campo }}>
               {MOTIVOS.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
             </select>
-          </div>
-          <button onClick={guardar} disabled={!fecha} style={{ ...s.saveBtn, padding: 10, fontSize: 15, marginTop: 8, opacity: fecha ? 1 : 0.5 }}>
-            {fecha ? `Programar para el ${fmtCorto(fecha)}` : 'Elige una fecha'}
+            <div style={etiqueta}>¿Qué conversaron? (opcional, sin datos clínicos)</div>
+            <textarea value={nota} onChange={e => setNota(e.target.value)} rows={2}
+              placeholder="Ej: se casa en marzo; quiere ver opciones para ojeras"
+              style={{ ...campo, resize: 'vertical', fontSize: 15, lineHeight: 1.4 }} />
+          </>)}
+
+          <button onClick={guardar} disabled={!listo || guardando}
+            style={{ ...s.saveBtn, padding: 10, fontSize: 15, marginTop: 10, opacity: listo && !guardando ? 1 : 0.5,
+              ...(sit === 'no_seguir' ? { background: 'var(--red-bg)', color: 'var(--red-text)' } : {}) }}>
+            {guardando ? 'Guardando…' : textoBoton}
           </button>
         </div>
       );
