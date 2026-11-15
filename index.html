@@ -71,6 +71,13 @@
       'Bioestimulador', 'Skin Builder', 'Mesoheal PHLO',
       'Consulta', 'Control', 'Otro'
     ];
+    function fmtPesos(n) {
+      return '$' + Math.round(Number(n) || 0).toLocaleString('es-CL');
+    }
+    function parsePesos(v) {
+      const digits = String(v ?? '').replace(/\D/g, '');
+      return digits ? parseInt(digits, 10) : null;
+    }
     const STATUS = {
       confirmed: { label: 'Confirmada', bg: 'var(--green-bg)', color: 'var(--green-text)' },
       pending:   { label: 'Pendiente',  bg: 'var(--amber-bg)', color: 'var(--amber-text)' },
@@ -448,7 +455,7 @@
                         <div style={durationBarStyle(appt.status)} />
                         <div style={s.apptInfo}>
                           <div style={s.apptName}>{appt.first_name} {appt.last_name}</div>
-                          {appt.treatment && <div style={s.apptTreatment}>{appt.treatment}</div>}
+                          {appt.treatment && <div style={s.apptTreatment}>{appt.treatment}{appt.monto != null ? ` · ${fmtPesos(appt.monto)}${appt.pagado ? ' ✓' : ''}` : ''}</div>}
                           {appt.notes && <div style={s.apptNote}>{appt.notes}</div>}
                         </div>
                         <span style={{
@@ -522,7 +529,27 @@
         treatment: appt?.treatment || '',
         status: appt?.status || (isPossible ? 'possible' : 'confirmed'),
         notes: appt?.notes || '',
+        monto: appt?.monto != null ? String(appt.monto) : '',
+        pagado: !!appt?.pagado,
       });
+      const [precios, setPrecios] = useState({});
+      const montoAuto = useRef(appt?.monto == null);
+      useEffect(() => {
+        db.from('precios_tratamientos').select('tratamiento, precio').then(({ data }) => {
+          const m = Object.fromEntries((data || []).map(r => [r.tratamiento, r.precio]));
+          setPrecios(m);
+          if (!isEdit && montoAuto.current && form.treatment && m[form.treatment] != null) {
+            setForm(f => ({ ...f, monto: String(m[f.treatment]) }));
+          }
+        });
+      }, []);
+      function setTratamiento(t) {
+        setForm(f => {
+          const next = { ...f, treatment: t };
+          if (montoAuto.current) next.monto = precios[t] != null ? String(precios[t]) : '';
+          return next;
+        });
+      }
       const [saving, setSaving] = useState(false);
       const [waModal, setWaModal] = useState(null);
       const [error, setError] = useState('');
@@ -591,6 +618,8 @@
           status: form.status,
           notes: form.notes.trim(),
           paciente_id: pid || null,
+          monto: parsePesos(form.monto),
+          pagado: !!form.pagado,
         };
         let err;
         if (isEdit) {
@@ -599,6 +628,11 @@
           ({ error: err } = await db.from('agenda_appts').insert([payload]));
         }
         if (err) { setError('Error al guardar: ' + err.message); setSaving(false); return; }
+
+        // Primer valor de un tratamiento sin precio de lista: queda como precio de lista
+        if (payload.monto != null && payload.treatment && payload.treatment !== 'Otro' && precios[payload.treatment] == null) {
+          db.from('precios_tratamientos').upsert([{ tratamiento: payload.treatment, precio: payload.monto }]).then(() => {});
+        }
 
         // Email de confirmación (fire & forget)
         if (payload.patient_email && payload.appt_date && payload.status !== 'cancelled' && payload.status !== 'possible') {
@@ -760,14 +794,30 @@
 
               <label style={s.label}>Tratamiento</label>
               <select style={s.select} value={esOtro ? 'Otro' : form.treatment}
-                onChange={e => { const v = e.target.value; if (v === 'Otro') { setEsOtro(true); set('treatment', otroTexto || 'Otro'); } else { setEsOtro(false); set('treatment', v); } }}>
+                onChange={e => { const v = e.target.value; if (v === 'Otro') { setEsOtro(true); setTratamiento(otroTexto || 'Otro'); } else { setEsOtro(false); setTratamiento(v); } }}>
                 <option value="">Seleccionar…</option>
                 {TREATMENTS.map(t => <option key={t}>{t}</option>)}
               </select>
               {esOtro && (
                 <input style={s.input} value={otroTexto} placeholder="¿Cuál tratamiento?"
-                  onChange={e => { setOtroTexto(e.target.value); set('treatment', e.target.value.trim() || 'Otro'); }} />
+                  onChange={e => { setOtroTexto(e.target.value); setTratamiento(e.target.value.trim() || 'Otro'); }} />
               )}
+
+              <div style={s.row}>
+                <div style={{ flex: 1 }}>
+                  <label style={s.label}>Valor <span style={{ color: 'var(--text-3)', fontWeight: 400, textTransform: 'none', letterSpacing: 0 }}>(CLP)</span></label>
+                  <input style={s.input} inputMode="numeric" value={form.monto ? fmtPesos(parsePesos(form.monto)) : ''}
+                    placeholder={precios[form.treatment] != null ? `Lista: ${fmtPesos(precios[form.treatment])}` : '$0'}
+                    onChange={e => { montoAuto.current = false; set('monto', String(parsePesos(e.target.value) ?? '')); }} />
+                </div>
+                <div style={{ flex: 1 }}>
+                  <label style={s.label}>Pago</label>
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    <button type="button" style={{ ...s.durBtn(!form.pagado), flex: 1 }} onClick={() => set('pagado', false)}>Pendiente</button>
+                    <button type="button" style={{ ...s.durBtn(form.pagado), flex: 1 }} onClick={() => set('pagado', true)}>Pagada</button>
+                  </div>
+                </div>
+              </div>
 
               <label style={s.label}>Nota <span style={{ color: 'var(--text-3)', fontWeight: 400, textTransform: 'none', letterSpacing: 0 }}>(referida por, teléfono, etc.)</span></label>
               <input style={s.input} value={form.notes} onChange={e => set('notes', e.target.value)} placeholder="Referida por Kathy · +56 9 ..." />
